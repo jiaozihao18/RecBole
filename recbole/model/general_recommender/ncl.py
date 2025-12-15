@@ -92,7 +92,7 @@ class NCL(GeneralRecommender):
 
         _, I = kmeans.index.search(x, 1)
 
-        # convert to cuda Tensors for broadcast
+        # convert to device Tensors for broadcast (GPU/NPU/CPU)
         centroids = torch.Tensor(cluster_cents).to(self.device)
         centroids = F.normalize(centroids, p=2, dim=1)
 

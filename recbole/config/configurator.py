@@ -32,6 +32,14 @@ from recbole.utils import (
     dataset_arguments,
     set_color,
 )
+from recbole.utils.device_utils import (
+    get_device_type,
+    set_device_visible_devices,
+    create_device,
+    set_current_device,
+    get_distributed_backend,
+    is_device_available,
+)
 
 
 class Config(object):
@@ -481,21 +489,29 @@ class Config(object):
         else:
             self.final_config_dict["gpu_id"] = str(self.final_config_dict["gpu_id"])
         gpu_id = self.final_config_dict["gpu_id"]
-        os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id
+        
+        # Detect device type (npu, cuda, or cpu)
+        device_type = get_device_type()
         import torch
+        
+        # Set visible devices environment variable based on device type
+        if len(gpu_id) > 0:
+            set_device_visible_devices(gpu_id, device_type)
 
         if "local_rank" not in self.final_config_dict:
             self.final_config_dict["single_spec"] = True
             self.final_config_dict["local_rank"] = 0
-            self.final_config_dict["device"] = (
-                torch.device("cpu")
-                if len(gpu_id) == 0 or not torch.cuda.is_available()
-                else torch.device("cuda")
-            )
+            # Create device based on detected device type
+            if len(gpu_id) == 0 or not is_device_available(device_type):
+                self.final_config_dict["device"] = torch.device("cpu")
+            else:
+                self.final_config_dict["device"] = create_device(device_type)
         else:
             assert len(gpu_id.split(",")) >= self.final_config_dict["nproc"]
+            # Get appropriate backend for distributed training
+            backend = get_distributed_backend(device_type)
             torch.distributed.init_process_group(
-                backend="nccl",
+                backend=backend,
                 rank=self.final_config_dict["local_rank"]
                 + self.final_config_dict["offset"],
                 world_size=self.final_config_dict["world_size"],
@@ -504,11 +520,13 @@ class Config(object):
                 + ":"
                 + str(self.final_config_dict["port"]),
             )
-            self.final_config_dict["device"] = torch.device(
-                "cuda", self.final_config_dict["local_rank"]
+            # Create device with local_rank for distributed training
+            self.final_config_dict["device"] = create_device(
+                device_type, self.final_config_dict["local_rank"]
             )
             self.final_config_dict["single_spec"] = False
-            torch.cuda.set_device(self.final_config_dict["local_rank"])
+            # Set current device for distributed training
+            set_current_device(self.final_config_dict["local_rank"], device_type)
             if self.final_config_dict["local_rank"] != 0:
                 self.final_config_dict["state"] = "error"
                 self.final_config_dict["show_progress"] = False

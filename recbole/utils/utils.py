@@ -186,7 +186,7 @@ def dict2str(result_dict):
 
 
 def init_seed(seed, reproducibility):
-    r"""init random seed for random functions in numpy, torch, cuda and cudnn
+    r"""init random seed for random functions in numpy, torch, cuda/cudnn and npu
 
     Args:
         seed (int): random seed
@@ -195,14 +195,30 @@ def init_seed(seed, reproducibility):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    
+    # Set seed for CUDA if available
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    
+    # Set seed for NPU if available
+    try:
+        import torch_npu
+        if torch_npu.npu.is_available():
+            torch_npu.npu.manual_seed(seed)
+            torch_npu.npu.manual_seed_all(seed)
+    except (ImportError, AttributeError):
+        pass
+    
+    # CUDNN settings (only applicable for CUDA)
     if reproducibility:
-        torch.backends.cudnn.benchmark = False
-        torch.backends.cudnn.deterministic = True
+        if hasattr(torch.backends, 'cudnn'):
+            torch.backends.cudnn.benchmark = False
+            torch.backends.cudnn.deterministic = True
     else:
-        torch.backends.cudnn.benchmark = True
-        torch.backends.cudnn.deterministic = False
+        if hasattr(torch.backends, 'cudnn'):
+            torch.backends.cudnn.benchmark = True
+            torch.backends.cudnn.deterministic = False
 
 
 def get_tensorboard(logger):
@@ -235,16 +251,33 @@ def get_tensorboard(logger):
 def get_gpu_usage(device=None):
     r"""Return the reserved memory and total memory of given device in a string.
     Args:
-        device: cuda.device. It is the device that the model run on.
+        device: torch.device (cuda or npu device). It is the device that the model run on.
 
     Returns:
         str: it contains the info about reserved memory and total memory of given device.
     """
-
-    reserved = torch.cuda.max_memory_reserved(device) / 1024**3
-    total = torch.cuda.get_device_properties(device).total_memory / 1024**3
-
-    return "{:.2f} G/{:.2f} G".format(reserved, total)
+    if device is None:
+        return "0.0 G/0.0 G"
+    
+    device_type = device.type if isinstance(device, torch.device) else str(device)
+    
+    if device_type == 'npu':
+        try:
+            import torch_npu
+            if torch_npu.npu.is_available():
+                reserved = torch_npu.npu.max_memory_reserved(device) / 1024**3
+                total = torch_npu.npu.get_device_properties(device).total_memory / 1024**3
+                return "{:.2f} G/{:.2f} G".format(reserved, total)
+        except (ImportError, AttributeError):
+            pass
+        return "N/A"
+    elif device_type == 'cuda':
+        if torch.cuda.is_available():
+            reserved = torch.cuda.max_memory_reserved(device) / 1024**3
+            total = torch.cuda.get_device_properties(device).total_memory / 1024**3
+            return "{:.2f} G/{:.2f} G".format(reserved, total)
+    
+    return "0.0 G/0.0 G"
 
 
 def get_flops(model, dataset, device, logger, transform, verbose=False):
@@ -416,9 +449,34 @@ def list_to_latex(convert_list, bigger_flag=True, subset_columns=[]):
 
 
 def get_environment(config):
+    # Check if accelerator is available (GPU or NPU)
+    try:
+        from recbole.utils.device_utils import is_device_available, get_device_type
+        device_type = get_device_type()
+        accelerator_available = is_device_available(device_type) and config.get("use_gpu", False)
+    except ImportError:
+        # Fallback: try NPU first, then CUDA, then CPU
+        accelerator_available = False
+        try:
+            import torch_npu
+            if torch_npu.npu.is_available() and config.get("use_gpu", False):
+                device_type = 'npu'
+                accelerator_available = True
+            elif torch.cuda.is_available() and config.get("use_gpu", False):
+                device_type = 'cuda'
+                accelerator_available = True
+            else:
+                device_type = 'cpu'
+        except (ImportError, AttributeError):
+            if torch.cuda.is_available() and config.get("use_gpu", False):
+                device_type = 'cuda'
+                accelerator_available = True
+            else:
+                device_type = 'cpu'
+    
     gpu_usage = (
         get_gpu_usage(config["device"])
-        if torch.cuda.is_available() and config["use_gpu"]
+        if accelerator_available
         else "0.0 / 0.0"
     )
 

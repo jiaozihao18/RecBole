@@ -21,6 +21,13 @@ from copy import deepcopy
 from recbole.model.init import xavier_normal_initialization
 from recbole.model.abstract_recommender import ContextRecommender
 
+# Try to import device utilities for NPU support
+try:
+    from recbole.utils.device_utils import create_device, get_device_type
+    DEVICE_UTILS_AVAILABLE = True
+except ImportError:
+    DEVICE_UTILS_AVAILABLE = False
+
 
 class KD_DAGFM(ContextRecommender):
     r"""KD_DAGFM is a context-based recommendation model. The model is based on directed acyclic graph and knowledge
@@ -116,10 +123,28 @@ class KD_DAGFM(ContextRecommender):
 class DAGFM(nn.Module):
     def __init__(self, config):
         super(DAGFM, self).__init__()
-        if torch.cuda.is_available():
-            self.device = torch.device("cuda")
+        # Use device from config if available, otherwise detect device
+        if "device" in config:
+            self.device = config["device"]
+        elif DEVICE_UTILS_AVAILABLE:
+            device_type = get_device_type()
+            self.device = create_device(device_type)
         else:
-            self.device = torch.device("cpu")
+            # Fallback: try NPU first, then CUDA, then CPU
+            try:
+                import torch_npu
+                if torch_npu.npu.is_available():
+                    self.device = torch.device("npu")
+                elif torch.cuda.is_available():
+                    self.device = torch.device("cuda")
+                else:
+                    self.device = torch.device("cpu")
+            except (ImportError, AttributeError):
+                # No torch_npu available, fallback to CUDA or CPU
+                if torch.cuda.is_available():
+                    self.device = torch.device("cuda")
+                else:
+                    self.device = torch.device("cpu")
 
         # load parameters info
         self.type = config["type"]
@@ -249,10 +274,28 @@ class CIN(nn.Module):
         nn.init.normal_(self.linear, mean=0, std=0.01)
         self.backbone = ["cin", "linear"]
         self.loss_fn = nn.BCELoss()
-        if torch.cuda.is_available():
-            self.device = torch.device("cuda")
+        # Use device from config if available, otherwise detect device
+        if "device" in config:
+            self.device = config["device"]
+        elif DEVICE_UTILS_AVAILABLE:
+            device_type = get_device_type()
+            self.device = create_device(device_type)
         else:
-            self.device = torch.device("cpu")
+            # Fallback: try NPU first, then CUDA, then CPU
+            try:
+                import torch_npu
+                if torch_npu.npu.is_available():
+                    self.device = torch.device("npu")
+                elif torch.cuda.is_available():
+                    self.device = torch.device("cuda")
+                else:
+                    self.device = torch.device("cpu")
+            except (ImportError, AttributeError):
+                # No torch_npu available, fallback to CUDA or CPU
+                if torch.cuda.is_available():
+                    self.device = torch.device("cuda")
+                else:
+                    self.device = torch.device("cpu")
 
     def FeatureInteraction(self, feature):
         base = feature

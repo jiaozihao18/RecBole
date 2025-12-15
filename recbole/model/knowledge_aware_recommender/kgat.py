@@ -296,7 +296,7 @@ class KGAT(KnowledgeRecommender):
         row = torch.cat(row_list, dim=0)
         col = torch.cat(col_list, dim=0)
         indices = torch.cat([row, col], dim=0).view(2, -1)
-        # Current PyTorch version does not support softmax on SparseCUDA, temporarily move to CPU to calculate softmax
+        # Current PyTorch version does not support softmax on sparse tensors on some devices, temporarily move to CPU to calculate softmax
         A_in = torch.sparse.FloatTensor(indices, kg_score, self.matrix_size).cpu()
         A_in = torch.sparse.softmax(A_in, dim=1).to(self.device)
         self.A_in = A_in

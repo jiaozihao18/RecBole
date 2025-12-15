@@ -27,7 +27,14 @@ import torch
 import torch.optim as optim
 from torch.nn.utils.clip_grad import clip_grad_norm_
 from tqdm import tqdm
-import torch.cuda.amp as amp
+# Use torch.amp for compatibility with both CUDA and NPU
+try:
+    from torch.amp import GradScaler
+except ImportError:
+    # Fallback to torch.cuda.amp.GradScaler for older PyTorch versions
+    from torch.cuda.amp import GradScaler
+
+# autocast is used with device_type parameter, so we use torch.autocast directly
 
 from recbole.data.interaction import Interaction
 from recbole.data.dataloader import FullSortEvalDataLoader
@@ -123,11 +130,37 @@ class Trainer(AbstractTrainer):
         self.valid_metric = config["valid_metric"].lower()
         self.valid_metric_bigger = config["valid_metric_bigger"]
         self.test_batch_size = config["eval_batch_size"]
-        self.gpu_available = torch.cuda.is_available() and config["use_gpu"]
+        # Check if accelerator (GPU or NPU) is available
+        try:
+            from recbole.utils.device_utils import is_device_available, get_device_type
+            device_type = get_device_type()
+            accelerator_available = is_device_available(device_type) and config["use_gpu"]
+        except ImportError:
+            # Fallback: try NPU first, then CUDA, then CPU
+            accelerator_available = False
+            try:
+                import torch_npu
+                if torch_npu.npu.is_available() and config["use_gpu"]:
+                    device_type = 'npu'
+                    accelerator_available = True
+                elif torch.cuda.is_available() and config["use_gpu"]:
+                    device_type = 'cuda'
+                    accelerator_available = True
+                else:
+                    device_type = 'cpu'
+            except (ImportError, AttributeError):
+                if torch.cuda.is_available() and config["use_gpu"]:
+                    device_type = 'cuda'
+                    accelerator_available = True
+                else:
+                    device_type = 'cpu'
+        
+        self.gpu_available = accelerator_available  # Keep name for compatibility
         self.device = config["device"]
         self.checkpoint_dir = config["checkpoint_dir"]
         self.enable_amp = config["enable_amp"]
-        self.enable_scaler = torch.cuda.is_available() and config["enable_scaler"]
+        # Enable scaler for both CUDA and NPU (NPU also supports AMP)
+        self.enable_scaler = accelerator_available and config["enable_scaler"]
         ensure_dir(self.checkpoint_dir)
         saved_model_file = "{}-{}.pth".format(self.config["model"], get_local_time())
         self.saved_model_file = os.path.join(self.checkpoint_dir, saved_model_file)
@@ -232,7 +265,7 @@ class Trainer(AbstractTrainer):
         if not self.config["single_spec"] and train_data.shuffle:
             train_data.sampler.set_epoch(epoch_idx)
 
-        scaler = amp.GradScaler(enabled=self.enable_scaler)
+        scaler = GradScaler(enabled=self.enable_scaler)
         for batch_idx, interaction in enumerate(iter_data):
             interaction = interaction.to(self.device)
             self.optimizer.zero_grad()
@@ -1437,7 +1470,7 @@ class NCLTrainer(Trainer):
             if show_progress
             else train_data
         )
-        scaler = amp.GradScaler(enabled=self.enable_scaler)
+        scaler = GradScaler(enabled=self.enable_scaler)
 
         if not self.config["single_spec"] and train_data.shuffle:
             train_data.sampler.set_epoch(epoch_idx)
@@ -1450,7 +1483,7 @@ class NCLTrainer(Trainer):
                 self.set_reduce_hook()
                 sync_loss = self.sync_grad_loss()
 
-            with amp.autocast(enabled=self.enable_amp):
+            with torch.autocast(device_type=self.device.type, enabled=self.enable_amp):
                 losses = loss_func(interaction)
 
             if isinstance(losses, tuple):
