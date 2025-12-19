@@ -601,6 +601,12 @@ class Config(object):
     def __getitem__(self, item):
         return self.final_config_dict.get(item)
 
+    def get(self, key, default=None):
+        """Return the value for key if key is in the dictionary, else default."""
+        if not isinstance(key, str):
+            raise TypeError("key must be a str.")
+        return self.final_config_dict.get(key, default)
+
     def __contains__(self, key):
         if not isinstance(key, str):
             raise TypeError("index must be a str.")
