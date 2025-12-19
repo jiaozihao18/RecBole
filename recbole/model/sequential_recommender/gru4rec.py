@@ -23,6 +23,7 @@ from torch.nn.init import xavier_uniform_, xavier_normal_
 
 from recbole.model.abstract_recommender import SequentialRecommender
 from recbole.model.loss import BPRLoss
+from recbole.model.custom_gru import CustomGRU
 
 
 class GRU4Rec(SequentialRecommender):
@@ -50,7 +51,7 @@ class GRU4Rec(SequentialRecommender):
             self.n_items, self.embedding_size, padding_idx=0
         )
         self.emb_dropout = nn.Dropout(self.dropout_prob)
-        self.gru_layers = nn.GRU(
+        self.gru_layers = CustomGRU(
             input_size=self.embedding_size,
             hidden_size=self.hidden_size,
             num_layers=self.num_layers,
@@ -67,30 +68,18 @@ class GRU4Rec(SequentialRecommender):
 
         # parameters initialization
         self.apply(self._init_weights)
-        # Flag to lazily switch parameters to fp16 on NPU to satisfy dynamicgruv2
-        self._npu_fp16_enabled = False
 
     def _init_weights(self, module):
         if isinstance(module, nn.Embedding):
             xavier_normal_(module.weight)
-        elif isinstance(module, nn.GRU):
-            xavier_uniform_(module.weight_hh_l0)
-            xavier_uniform_(module.weight_ih_l0)
-
-    def _maybe_enable_npu_fp16(self, device):
-        """Cast weights to fp16 for Ascend NPU where dynamicgruv2 requires fp16."""
-        if not self._npu_fp16_enabled and getattr(device, "type", None) == "npu":
-            self.item_embedding = self.item_embedding.to(torch.float16)
-            self.gru_layers = self.gru_layers.to(torch.float16)
-            self.dense = self.dense.to(torch.float16)
-            self._npu_fp16_enabled = True
+        elif isinstance(module, CustomGRU):
+            # Initialize CustomGRU weights using xavier uniform
+            for layer_idx in range(module.num_layers):
+                xavier_uniform_(module.weight_hh_l[layer_idx])
+                xavier_uniform_(module.weight_ih_l[layer_idx])
 
     def forward(self, item_seq, item_seq_len):
-        # Ensure NPU uses fp16 to avoid dynamicgruv2 unsupported dtype
-        self._maybe_enable_npu_fp16(item_seq.device)
         item_seq_emb = self.item_embedding(item_seq)
-        if item_seq_emb.device.type == "npu" and item_seq_emb.dtype != torch.float16:
-            item_seq_emb = item_seq_emb.to(torch.float16)
         item_seq_emb_dropout = self.emb_dropout(item_seq_emb)
         gru_output, _ = self.gru_layers(item_seq_emb_dropout)
         gru_output = self.dense(gru_output)
